@@ -118,7 +118,7 @@ class FFD(nn.Module):
 
         # 计算fitting loss（在归一化空间中）
         fitting_points = deformed_points_normalized[self.deform_point_idxs]
-        loss_fit = F.l1_loss(fitting_points, self.normalized_target_points)
+        loss_fit = F.smooth_l1_loss(fitting_points, self.normalized_target_points)
 
         # 计算正则化loss
         loss_reg = self.get_regularization_loss()
