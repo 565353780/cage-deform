@@ -5,6 +5,12 @@ from typing import Union
 
 from cage_deform.Method.data import toNumpy
 
+def toO3DPcd(
+    points: Union[torch.Tensor, np.ndarray, list],
+) -> o3d.geometry.PointCloud:
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(toNumpy(points, np.float64))
+    return pcd
 
 def toO3DMesh(
     vertices: Union[torch.Tensor, np.ndarray, list],

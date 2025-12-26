@@ -31,3 +31,4 @@ def demo():
     target_mesh = toO3DMesh(deformed_points, mesh.faces)
 
     o3d.visualization.draw_geometries([source_mesh, target_mesh])
+    return True

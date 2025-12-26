@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 from typing import Union
 
+
 class FFD(nn.Module):
     def __init__(
         self, 
