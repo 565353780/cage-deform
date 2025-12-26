@@ -25,7 +25,7 @@ def loadMeshFile(
         print('[ERROR][NVDiffRastRenderer::loadMeshFile]')
         print('\t load mesh failed!')
         print('\t mesh_file_path:', mesh_file_path)
-        return False
+        return None
 
     if not hasattr(mesh.visual, 'vertex_colors') or mesh.visual.vertex_colors is None:
         num_verts = len(mesh.vertices)
