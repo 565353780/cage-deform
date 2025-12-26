@@ -9,8 +9,14 @@ from cage_deform.Module.cage_deformer import CageDeformer
 
 def demo():
     mesh_file_path = "/Users/chli/Downloads/c6c113443a8ebb331ed307f33b1385c31a7d0c2fa8ed97b511511048e9e1a4afv1_5_-1_stagetwo_1024.glb"
+    voxel_size = 1.0 / 8
+    padding = 0.1
+    lr = 1e-2
+    lambda_reg = 1e4
+    steps = 500
     dtype = torch.float32
     device = 'cpu'
+
 
     mesh = loadMeshFile(mesh_file_path)
 
@@ -25,7 +31,10 @@ def demo():
 
     cage_deformer = CageDeformer(dtype, device)
 
-    deformed_points = cage_deformer.deformPoints(points, deform_point_idxs, target_points)
+    deformed_points = cage_deformer.deformPoints(
+        points, deform_point_idxs, target_points,
+        voxel_size, padding, lr, lambda_reg, steps,
+    )
 
     source_mesh = toO3DMesh(mesh.vertices, mesh.faces)
     target_mesh = toO3DMesh(deformed_points, mesh.faces)

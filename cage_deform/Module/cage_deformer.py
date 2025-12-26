@@ -68,10 +68,12 @@ class CageDeformer(object):
         points: Union[torch.Tensor, np.ndarray, list],
         deform_point_idxs: Union[torch.Tensor, np.ndarray, list],
         target_points: Union[torch.Tensor, np.ndarray, list],
+        voxel_size: float = 1.0 / 8,
+        padding: float = 0.1,
+        lr: float = 1e-2,
+        lambda_reg: float = 1e4,
+        steps: int = 500,
     ) -> torch.Tensor:
-        lr = 1e-2
-        steps = 500
-        lambda_reg = 1e4 # 平滑项权重，越大越刚性/平滑
 
         points = toTensor(points, self.dtype, self.device)
         deform_point_idxs = toTensor(deform_point_idxs, torch.int64, self.device)
@@ -81,20 +83,18 @@ class CageDeformer(object):
 
         print(f"Total points: {points.shape[0]}, Control points: {deform_point_idxs.shape[0]}")
 
-        # 初始化变形器（现在需要传入三个参数）
         deformer = FFD(
             matched_points,
             deform_point_idxs,
             target_points,
-            voxel_size=1.0 / 8,
-            padding=0.1,
+            voxel_size=voxel_size,
+            padding=padding,
         ).to(self.device)
         optimizer = optim.Adam(deformer.parameters(), lr=lr)
 
         for i in range(steps):
             optimizer.zero_grad()
 
-            # forward现在直接返回loss
             loss_dict = deformer(lambda_reg=lambda_reg)
 
             loss = loss_dict['Loss']
@@ -106,7 +106,6 @@ class CageDeformer(object):
                 loss_reg = loss_dict['LossReg']
                 print(f"Step {i}: Fit Loss = {loss_fit.item():.6f}, Reg Loss = {loss_reg.item():.6f}, Total Loss = {loss.item():.6f}")
 
-        # 使用toWorldDeformedPoints获取最终结果
         final_points = deformer.toWorldDeformedPoints()
 
         print("Optimization Done.")
