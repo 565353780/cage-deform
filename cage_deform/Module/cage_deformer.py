@@ -1,7 +1,6 @@
 import torch
 import numpy as np
 import torch.optim as optim
-import torch.nn.functional as F
 from typing import Union
 
 from cage_deform.Model.ffd import FFD
@@ -26,7 +25,7 @@ class CageDeformer(object):
     ) -> torch.Tensor:
         lr = 1e-2
         steps = 500
-        lambda_reg = 10.0 # 平滑项权重，越大越刚性/平滑
+        lambda_reg = 1e4 # 平滑项权重，越大越刚性/平滑
 
         points = toTensor(points, self.dtype, self.device)
         deform_point_idxs = toTensor(deform_point_idxs, torch.int32, self.device)
@@ -34,29 +33,33 @@ class CageDeformer(object):
 
         print(f"Total points: {points.shape[0]}, Control points: {deform_point_idxs.shape[0]}")
 
-        # 3. 初始化变形器
-        deformer = FFD(points, voxel_size=0.3, padding=0.2).to(self.device)
+        # 初始化变形器（现在需要传入三个参数）
+        deformer = FFD(
+            points,
+            deform_point_idxs,
+            target_points,
+            voxel_size=1.0 / 8,
+            padding=0.1,
+        ).to(self.device)
         optimizer = optim.Adam(deformer.parameters(), lr=lr)
 
         for i in range(steps):
             optimizer.zero_grad()
 
-            current_points = deformer()
+            # forward现在直接返回loss
+            loss_dict = deformer(lambda_reg=lambda_reg)
 
-            fitting_points = current_points[deform_point_idxs]
-            loss_fit = F.mse_loss(fitting_points, target_points)
-
-            loss_reg = deformer.get_regularization_loss()
-
-            loss = loss_fit + lambda_reg * loss_reg
-
+            loss = loss_dict['Loss']
             loss.backward()
             optimizer.step()
 
             if i % 100 == 0:
-                print(f"Step {i}: Fit Loss = {loss_fit.item():.6f}, Reg Loss = {loss_reg.item():.6f}")
+                loss_fit = loss_dict['LossFit']
+                loss_reg = loss_dict['LossReg']
+                print(f"Step {i}: Fit Loss = {loss_fit.item():.6f}, Reg Loss = {loss_reg.item():.6f}, Total Loss = {loss.item():.6f}")
 
-        final_points = deformer()
+        # 使用toWorldDeformedPoints获取最终结果
+        final_points = deformer.toWorldDeformedPoints()
 
         print("Optimization Done.")
         return final_points
