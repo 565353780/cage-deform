@@ -17,16 +17,12 @@ class CageDeformer(object):
         self.device = device
         return
 
-    def deformPoints(
+    def matchPoints(
         self,
         points: Union[torch.Tensor, np.ndarray, list],
         deform_point_idxs: Union[torch.Tensor, np.ndarray, list],
         target_points: Union[torch.Tensor, np.ndarray, list],
     ) -> torch.Tensor:
-        lr = 1e-2
-        steps = 500
-        lambda_reg = 1e4 # 平滑项权重，越大越刚性/平滑
-
         points = toTensor(points, self.dtype, self.device)
         deform_point_idxs = toTensor(deform_point_idxs, torch.int64, self.device)
         target_points = toTensor(target_points, self.dtype, self.device)
@@ -64,6 +60,24 @@ class CageDeformer(object):
         points_h = np.concatenate([points_np, np.ones((points_np.shape[0], 1), dtype=np.float32)], axis=1) # [N,4]
         deformed_points_np = (points_h @ affine.T)[:, :3]
         matched_points = toTensor(deformed_points_np, self.dtype, self.device)
+
+        return matched_points
+
+    def deformPoints(
+        self,
+        points: Union[torch.Tensor, np.ndarray, list],
+        deform_point_idxs: Union[torch.Tensor, np.ndarray, list],
+        target_points: Union[torch.Tensor, np.ndarray, list],
+    ) -> torch.Tensor:
+        lr = 1e-2
+        steps = 500
+        lambda_reg = 1e4 # 平滑项权重，越大越刚性/平滑
+
+        points = toTensor(points, self.dtype, self.device)
+        deform_point_idxs = toTensor(deform_point_idxs, torch.int64, self.device)
+        target_points = toTensor(target_points, self.dtype, self.device)
+
+        matched_points = self.matchPoints(points, deform_point_idxs, target_points)
 
         print(f"Total points: {points.shape[0]}, Control points: {deform_point_idxs.shape[0]}")
 
