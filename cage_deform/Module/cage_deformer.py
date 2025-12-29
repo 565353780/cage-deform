@@ -74,6 +74,8 @@ class CageDeformer(object):
         lambda_reg: float = 1e4,
         steps: int = 500,
     ) -> torch.Tensor:
+        # 确保梯度计算已启用（防止Detector初始化时可能禁用了梯度）
+        torch.set_grad_enabled(True)
 
         points = toTensor(points, self.dtype, self.device)
         deform_point_idxs = toTensor(deform_point_idxs, torch.int64, self.device)
@@ -90,6 +92,11 @@ class CageDeformer(object):
             voxel_size=voxel_size,
             padding=padding,
         ).to(self.device)
+        # 确保模型处于训练模式，以便梯度计算
+        deformer.train()
+        # 确保所有参数都启用梯度
+        for param in deformer.parameters():
+            param.requires_grad = True
         optimizer = optim.Adam(deformer.parameters(), lr=lr)
 
         for i in range(steps):
