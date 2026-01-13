@@ -1,7 +1,7 @@
 import torch
 import numpy as np
-import torch.nn.functional as F
 import torch.optim as optim
+import torch.nn.functional as F
 from typing import Union, Optional
 
 from cage_deform.Method.data import toTensor
@@ -10,11 +10,11 @@ from cage_deform.Method.data import toTensor
 class BSplineDeformer(object):
     """
     基于三次 B 样条的自由形式变形 (B-Spline FFD)。
-    
+
     与传统的三线性插值不同，三次 B 样条使用 4×4×4 = 64 个控制点来计算
     每个点的位置，这保证了 C² 连续性（二阶导数连续），从而避免了
     分段仿射变形导致的曲率断裂问题。
-    
+
     三次 B 样条基函数：
     - B0(t) = (1-t)³/6
     - B1(t) = (3t³ - 6t² + 4)/6  
@@ -57,10 +57,10 @@ class BSplineDeformer(object):
     def _bspline_basis(t: torch.Tensor) -> tuple:
         """
         计算三次 B 样条的 4 个基函数值。
-        
+
         Args:
             t: 局部坐标 [0, 1) 范围内的值
-            
+
         Returns:
             (B0, B1, B2, B3): 四个基函数在 t 处的值
         """
@@ -69,35 +69,35 @@ class BSplineDeformer(object):
         one_minus_t = 1.0 - t
         one_minus_t2 = one_minus_t * one_minus_t
         one_minus_t3 = one_minus_t2 * one_minus_t
-        
+
         # 三次 B 样条基函数（均匀节点）
         B0 = one_minus_t3 / 6.0
         B1 = (3.0 * t3 - 6.0 * t2 + 4.0) / 6.0
         B2 = (-3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0) / 6.0
         B3 = t3 / 6.0
-        
+
         return B0, B1, B2, B3
 
     @staticmethod
     def _bspline_basis_derivative(t: torch.Tensor) -> tuple:
         """
         计算三次 B 样条基函数的一阶导数。
-        
+
         Args:
             t: 局部坐标 [0, 1) 范围内的值
-            
+
         Returns:
             (dB0, dB1, dB2, dB3): 四个基函数导数在 t 处的值
         """
         t2 = t * t
         one_minus_t = 1.0 - t
         one_minus_t2 = one_minus_t * one_minus_t
-        
+
         dB0 = -one_minus_t2 / 2.0
         dB1 = (3.0 * t2 - 4.0 * t) / 2.0
         dB2 = (-3.0 * t2 + 2.0 * t + 1.0) / 2.0
         dB3 = t2 / 2.0
-        
+
         return dB0, dB1, dB2, dB3
 
     def loadPoints(
@@ -108,7 +108,7 @@ class BSplineDeformer(object):
     ) -> dict:
         """
         加载点云并创建 B 样条控制网格。
-        
+
         注意：为了在边界处也能进行完整的 4×4×4 插值，控制网格会在
         每个方向上多出 3 个控制点（前后各 1.5 个体素的额外空间）。
 
@@ -151,7 +151,7 @@ class BSplineDeformer(object):
         # 4. 根据 voxel_size 计算内部网格的维度
         normalized_voxel_size = voxel_size / self.scale
         dims = (self.extent / normalized_voxel_size).ceil().int()
-        
+
         # 内部网格尺寸
         self.grid_W = max(dims[0].item(), 2)
         self.grid_H = max(dims[1].item(), 2)
@@ -187,10 +187,10 @@ class BSplineDeformer(object):
     def _point_to_cell_coords(self, points: torch.Tensor) -> tuple:
         """
         将归一化空间中的点转换为体素网格坐标。
-        
+
         Args:
             points: 归一化空间中的点 (N, 3)
-            
+
         Returns:
             (cell_indices, local_coords): 
                 - cell_indices: 点所在的体素索引 (N, 3)
@@ -198,10 +198,10 @@ class BSplineDeformer(object):
         """
         # 归一化到 [0, grid_size] 范围
         grid_coords = (points - self.min_coords) / self.actual_voxel_size
-        
+
         # 体素索引（向下取整）
         cell_indices = grid_coords.floor().long()
-        
+
         # 限制在有效范围内 [0, grid_size - 1]
         cell_indices = torch.clamp(
             cell_indices,
@@ -209,11 +209,11 @@ class BSplineDeformer(object):
             max=torch.tensor([self.grid_W - 1, self.grid_H - 1, self.grid_D - 1], 
                            dtype=torch.long, device=self.device)
         )
-        
+
         # 局部坐标 [0, 1)
         local_coords = grid_coords - cell_indices.float()
         local_coords = torch.clamp(local_coords, 0.0, 0.999999)
-        
+
         return cell_indices, local_coords
 
     def _evaluate_bspline(
@@ -223,27 +223,27 @@ class BSplineDeformer(object):
     ) -> torch.Tensor:
         """
         使用三次 B 样条在给定点处计算偏移量。
-        
+
         对于每个点，使用其周围 4×4×4 = 64 个控制点进行插值。
-        
+
         Args:
             points: 归一化空间中的点 (N, 3)
             control_offsets: 控制点偏移量 (D+3, H+3, W+3, 3)
-            
+
         Returns:
             点的偏移量 (N, 3)
         """
         cell_indices, local_coords = self._point_to_cell_coords(points)
         N = points.shape[0]
-        
+
         # 计算三个方向上的 B 样条基函数值
         Bx = self._bspline_basis(local_coords[:, 0])  # 4 个元素，每个 (N,)
         By = self._bspline_basis(local_coords[:, 1])
         Bz = self._bspline_basis(local_coords[:, 2])
-        
+
         # 初始化输出
         offsets = torch.zeros(N, 3, dtype=self.dtype, device=self.device)
-        
+
         # 4×4×4 循环计算 B 样条插值
         for i in range(4):
             for j in range(4):
@@ -253,16 +253,16 @@ class BSplineDeformer(object):
                     idx_x = cell_indices[:, 0] + k  # [0, grid_W + 2]
                     idx_y = cell_indices[:, 1] + j  # [0, grid_H + 2]
                     idx_z = cell_indices[:, 2] + i  # [0, grid_D + 2]
-                    
+
                     # 获取控制点偏移量
                     ctrl_offset = control_offsets[idx_z, idx_y, idx_x]  # (N, 3)
-                    
+
                     # 计算权重
                     weight = Bx[k] * By[j] * Bz[i]  # (N,)
-                    
+
                     # 累加贡献
                     offsets += weight.unsqueeze(1) * ctrl_offset
-        
+
         return offsets
 
     def _compute_affine_transform(
@@ -301,7 +301,7 @@ class BSplineDeformer(object):
     ) -> torch.Tensor:
         """
         使用三次 B 样条 FFD 将源点变形到目标点位置。
-        
+
         这个方法会优化控制网格的偏移量，使得变形后的源点尽可能接近目标点，
         同时保持变形的平滑性（C² 连续）。
 
@@ -343,7 +343,7 @@ class BSplineDeformer(object):
             dtype=self.dtype, device=self.device, requires_grad=True
         )
 
-        optimizer = optim.Adam([self.control_offsets], lr=lr)
+        optimizer = optim.AdamW([self.control_offsets], lr=lr)
 
         for i in range(steps):
             optimizer.zero_grad()
@@ -365,7 +365,7 @@ class BSplineDeformer(object):
             loss.backward()
             optimizer.step()
 
-            if i % 50 == 0:
+            if i % 10 == 0:
                 print(f"Step {i}: Fit={loss_fit.item():.6e}, "
                       f"Smooth={loss_smooth.item():.6e}, Mag={loss_mag.item():.6e}")
 
@@ -380,16 +380,16 @@ class BSplineDeformer(object):
     def _compute_regularization_loss(self) -> tuple:
         """
         计算正则化损失。
-        
+
         包括：
         1. 二阶平滑约束（Laplacian）- 确保变形场 C² 平滑
         2. 幅度约束 - 防止控制点偏移过大
-        
+
         Returns:
             (loss_smooth, loss_magnitude)
         """
         grid = self.control_offsets  # (D+3, H+3, W+3, 3)
-        
+
         # 二阶差分（Laplacian 近似）
         # 沿 D 轴 (Z)
         dzz = grid[2:, :, :, :] - 2 * grid[1:-1, :, :, :] + grid[:-2, :, :, :]
@@ -397,19 +397,19 @@ class BSplineDeformer(object):
         dyy = grid[:, 2:, :, :] - 2 * grid[:, 1:-1, :, :] + grid[:, :-2, :, :]
         # 沿 W 轴 (X)
         dxx = grid[:, :, 2:, :] - 2 * grid[:, :, 1:-1, :] + grid[:, :, :-2, :]
-        
+
         loss_smooth = torch.mean(dzz**2) + torch.mean(dyy**2) + torch.mean(dxx**2)
         loss_magnitude = torch.mean(grid**2)
-        
+
         return loss_smooth, loss_magnitude
 
     def _apply_deformation(self, points: torch.Tensor) -> torch.Tensor:
         """
         对点云应用已学习的 B 样条形变。
-        
+
         Args:
             points: 世界坐标系点云 (N, 3)
-            
+
         Returns:
             形变后的点云 (N, 3)
         """
@@ -477,9 +477,9 @@ class BSplineDeformer(object):
             raise RuntimeError("请先调用 loadPoints 和 deformPoints！")
 
         vertices_world = self.getControlPoints()
-        
+
         # 直接添加控制点偏移（已经在归一化空间中）
         offsets_flat = self.control_offsets.reshape(-1, 3) * self.scale
         deformed_vertices = vertices_world + offsets_flat
-        
+
         return deformed_vertices
