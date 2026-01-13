@@ -287,7 +287,7 @@ class CageDeformer(object):
             loss.backward()
             optimizer.step()
 
-            if i % 100 == 0:
+            if i % 10 == 0:
                 print(f"Step {i}: Fit Loss = {loss_fit.item():.6f}, "
                       f"Reg Loss = {loss_reg.item():.6f}, Total Loss = {loss.item():.6f}")
 
