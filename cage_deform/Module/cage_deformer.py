@@ -288,8 +288,8 @@ class CageDeformer(object):
             optimizer.step()
 
             if i % 10 == 0:
-                print(f"Step {i}: Fit Loss = {loss_fit.item():.6f}, "
-                      f"Reg Loss = {loss_reg.item():.6f}, Total Loss = {loss.item():.6f}")
+                print(f"Step {i}: Fit Loss = {loss_fit.item():.6e}, "
+                      f"Reg Loss = {loss_reg.item():.6e}, Total Loss = {loss.item():.6e}")
 
         # 将形变参数设为不可学习（推理模式）
         self.cage_offsets = self.cage_offsets.detach()
