@@ -21,7 +21,6 @@ class BSplineDeformer(object):
     - B2(t) = (-3t³ + 3t² + 3t + 1)/6
     - B3(t) = t³/6
     """
-    
     def __init__(
         self,
         dtype=torch.float32,
