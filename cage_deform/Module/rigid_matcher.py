@@ -102,7 +102,7 @@ class RigidMatcher(object):
             print("精匹配: 全点云 ICP...")
             reg_fine = o3d.pipelines.registration.registration_icp(
                 source_pcd_full, target_pcd_full, threshold, best_coarse_trans,
-                o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+                o3d.pipelines.registration.TransformationEstimationPointToPoint(with_scaling=True),
                 o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=5000),
             )
             source_pcd_full.transform(reg_fine.transformation)
