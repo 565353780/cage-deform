@@ -81,7 +81,7 @@ class RigidMatcher(object):
 
                 reg = o3d.pipelines.registration.registration_icp(
                     source_pcd_coarse, target_pcd_coarse, threshold, trans_init,
-                    o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+                    o3d.pipelines.registration.TransformationEstimationPointToPoint(with_scaling=True),
                     o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=2000),
                 )
 
