@@ -4,6 +4,11 @@ import torch.optim as optim
 import torch.nn.functional as F
 from typing import Union, Optional
 
+if torch.cuda.is_available():
+    from cage_deform.Lib.chamfer3D.dist_chamfer_3D import chamfer_3DDist
+else:
+    from cage_deform.Lib.chamfer3D.chamfer_python import distChamfer
+
 from cage_deform.Method.data import toTensor
 
 
@@ -50,6 +55,11 @@ class BSplineDeformer(object):
 
         # 初始点云（归一化空间）
         self.initial_points: Optional[torch.Tensor] = None
+
+        if torch.cuda.is_available() and device != "cpu":
+            self.chamfer_func = chamfer_3DDist()
+        else:
+            self.chamfer_func = distChamfer
         return
 
     @staticmethod
@@ -374,6 +384,109 @@ class BSplineDeformer(object):
         final_points = self._apply_deformation(aligned_source)
 
         print("B-Spline FFD Optimization Done.")
+        return final_points
+
+    def _chamfer_loss(
+        self,
+        points_a: torch.Tensor,
+        points_b: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        计算两点云之间的 Chamfer 距离（支持点数不同）。
+
+        Args:
+            points_a: (N, 3) 或 (1, N, 3)
+            points_b: (M, 3) 或 (1, M, 3)
+
+        Returns:
+            chamfer_loss: 标量
+        """
+        if points_a.dim() == 2:
+            points_a = points_a.unsqueeze(0)
+        if points_b.dim() == 2:
+            points_b = points_b.unsqueeze(0)
+        if torch.cuda.is_available() and points_a.is_cuda:
+            dist1, dist2, _, _ = self.chamfer_func(points_a, points_b)
+            return dist1.mean() + dist2.mean()
+        else:
+            dist1, dist2, _, _ = self.chamfer_func(points_a, points_b)
+            return dist1.mean() + dist2.mean()
+
+    def deformUnmatchedPoints(
+        self,
+        source_points: Union[torch.Tensor, np.ndarray, list],
+        target_points: Union[torch.Tensor, np.ndarray, list],
+        lr: float = 1e-2,
+        lambda_smooth: float = 1e3,
+        lambda_magnitude: float = 1.0,
+        steps: int = 500,
+    ) -> torch.Tensor:
+        """
+        使用 B 样条 FFD 将源点云变形，最小化与目标点云之间的 Chamfer 距离。
+
+        允许 source_points 与 target_points 数量不一致（未匹配点云）。
+        通过优化控制网格偏移，使变形后的源点云在 Chamfer 意义下逼近目标点云。
+
+        Args:
+            source_points: 源点云（世界坐标系）(N, 3)
+            target_points: 目标点云（世界坐标系）(M, 3)，M 可与 N 不同
+            lr: 学习率
+            lambda_smooth: 平滑正则化权重
+            lambda_magnitude: 幅度正则化权重
+            steps: 优化步数
+
+        Returns:
+            形变后的源点云 (N, 3)
+        """
+        if self.control_offsets is None:
+            raise RuntimeError("请先调用 loadPoints 加载点云并创建控制网格！")
+
+        torch.set_grad_enabled(True)
+
+        source_points = toTensor(source_points, self.dtype, self.device)
+        target_points = toTensor(target_points, self.dtype, self.device)
+
+        print(f"deformUnmatchedPoints: source {source_points.shape[0]}, target {target_points.shape[0]}")
+
+        # 1. 仅做质心对齐（点数不同无法做仿射 lstsq）
+        source_centroid = source_points.mean(dim=0, keepdim=True)
+        target_centroid = target_points.mean(dim=0, keepdim=True)
+        aligned_source = source_points + (target_centroid - source_centroid)
+
+        # 2. 转换到归一化空间
+        normalized_source = (aligned_source - self.center) / self.scale
+        normalized_target = (target_points - self.center) / self.scale
+
+        # 3. 控制点偏移设为可学习
+        self.control_offsets = torch.zeros(
+            self.grid_D + 3, self.grid_H + 3, self.grid_W + 3, 3,
+            dtype=self.dtype, device=self.device, requires_grad=True
+        )
+
+        optimizer = optim.AdamW([self.control_offsets], lr=lr)
+
+        for i in range(steps):
+            optimizer.zero_grad()
+
+            point_offsets = self._evaluate_bspline(normalized_source, self.control_offsets)
+            deformed_points = normalized_source + point_offsets
+
+            # Chamfer loss（支持 N != M）
+            loss_chamfer = self._chamfer_loss(deformed_points, normalized_target)
+
+            loss_smooth, loss_mag = self._compute_regularization_loss()
+            loss = loss_chamfer + lambda_smooth * loss_smooth + lambda_magnitude * loss_mag
+            loss.backward()
+            optimizer.step()
+
+            if i % 10 == 0:
+                print(f"Step {i}: Chamfer={loss_chamfer.item():.6e}, "
+                      f"Smooth={loss_smooth.item():.6e}, Mag={loss_mag.item():.6e}")
+
+        self.control_offsets = self.control_offsets.detach()
+
+        final_points = self._apply_deformation(aligned_source)
+        print("deformUnmatchedPoints (Chamfer) Optimization Done.")
         return final_points
 
     def _compute_regularization_loss(self) -> tuple:
