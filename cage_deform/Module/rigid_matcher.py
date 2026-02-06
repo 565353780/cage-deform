@@ -3,7 +3,8 @@ import torch
 import numpy as np
 import open3d as o3d
 from tqdm import tqdm
-from typing import Union
+from typing import Union, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from cage_deform.Method.pcd import toPcd
 from cage_deform.Method.data import toNumpy
@@ -11,6 +12,30 @@ from cage_deform.Method.io import loadMeshFile
 from cage_deform.Method.path import createFileFolder
 from cage_deform.Method.sample import sample_axis_aligned_rotations
 from cage_deform.Method.sample import sampleFibonacciRotations
+
+
+def _run_single_icp(
+    R_axis: np.ndarray,
+    R_fib: np.ndarray,
+    source_pts_coarse: np.ndarray,
+    target_pcd_coarse: o3d.geometry.PointCloud,
+    target_center: np.ndarray,
+    threshold: float,
+) -> Tuple[float, float, np.ndarray, np.ndarray]:
+    """单次粗匹配 ICP，返回 (fitness, inlier_rmse, R_combined, transformation)。"""
+    R_combined = R_fib @ R_axis
+    rotated_source_coarse = (source_pts_coarse - target_center) @ R_combined.T + target_center
+    source_pcd_coarse = toPcd(rotated_source_coarse)
+    trans_init = np.eye(4)
+    reg = o3d.pipelines.registration.registration_icp(
+        source_pcd_coarse,
+        target_pcd_coarse,
+        threshold,
+        trans_init,
+        o3d.pipelines.registration.TransformationEstimationPointToPoint(with_scaling=True),
+        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=2000),
+    )
+    return (reg.fitness, reg.inlier_rmse, R_combined.copy(), reg.transformation.copy())
 
 
 class RigidMatcher(object):
@@ -64,32 +89,37 @@ class RigidMatcher(object):
         axis_rotations = sample_axis_aligned_rotations()  # X/Y/Z 各 0,90,180,270 度，共 64 种
         fib_rotations = sampleFibonacciRotations(test_rotation_num)  # 每种轴位姿下的细采样旋转
         threshold = 0.02  # 移动范围阈值
-        trans_init = np.eye(4)
+
+        # 所有 (R_axis, R_fib) 组合，用于并行 ICP
+        rotation_pairs = [(R_axis, R_fib) for R_axis in axis_rotations for R_fib in fib_rotations]
+        total_cases = len(rotation_pairs)
+        max_workers = min(32, (os.cpu_count() or 4) + 4)
+        print(f"粗匹配: {coarse_sample_num} 点, 64 种轴对齐 × {test_rotation_num} 细旋转 = {total_cases} 次 ICP (并行 workers={max_workers})...")
 
         best_fitness = -1.0
+        best_rmse = float("inf")
         best_rotation = None
         best_coarse_trans = None
 
-        total_cases = len(axis_rotations) * len(fib_rotations)
-        print(f"粗匹配: {coarse_sample_num} 点, 64 种轴对齐 × {test_rotation_num} 细旋转 = {total_cases} 次 ICP...")
-        for R_axis in tqdm(axis_rotations, desc="64 轴对齐"):
-            for R_fib in fib_rotations:
-                # 组合旋转：先轴对齐 R_axis，再细旋转 R_fib → 总旋转 R = R_fib @ R_axis
-                R_combined = R_fib @ R_axis
-                rotated_source_coarse = (source_pts_coarse - target_center) @ R_combined.T + target_center
-                source_pcd_coarse = toPcd(rotated_source_coarse)
+        def _task(args: Tuple[np.ndarray, np.ndarray]) -> Tuple[float, float, np.ndarray, np.ndarray]:
+            R_axis, R_fib = args
+            return _run_single_icp(
+                R_axis, R_fib,
+                source_pts_coarse, target_pcd_coarse, target_center, threshold,
+            )
 
-                reg = o3d.pipelines.registration.registration_icp(
-                    source_pcd_coarse, target_pcd_coarse, threshold, trans_init,
-                    o3d.pipelines.registration.TransformationEstimationPointToPoint(with_scaling=True),
-                    o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=2000),
-                )
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_task, pair): pair for pair in rotation_pairs}
+            for future in tqdm(as_completed(futures), total=total_cases, desc="粗匹配 ICP"):
+                fitness, inlier_rmse, R_combined, trans = future.result()
+                if fitness > best_fitness:
+                    best_fitness = fitness
+                    best_rmse = inlier_rmse
+                    best_rotation = R_combined
+                    best_coarse_trans = trans
 
-                if reg.fitness > best_fitness:
-                    best_fitness = reg.fitness
-                    best_rotation = R_combined.copy()
-                    best_coarse_trans = reg.transformation.copy()
-                    print(f"  更新最佳: Fitness={reg.fitness:.6f}, RMSE={reg.inlier_rmse:.6f}")
+        if best_rotation is not None:
+            print(f"  粗匹配最佳: Fitness={best_fitness:.6f}, RMSE={best_rmse:.6f}")
 
         if best_rotation is None:
             best_icp_pts = source_pts  # 无有效配准时退回当前 source_pts
