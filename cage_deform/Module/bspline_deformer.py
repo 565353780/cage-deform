@@ -53,9 +53,6 @@ class BSplineDeformer(object):
         # 形状为 (D+3, H+3, W+3, 3)，额外的控制点用于边界处理
         self.control_offsets: Optional[torch.Tensor] = None
 
-        # deformUnmatchedPoints 使用的质心对齐偏移 (3,)；queryPoints 输入为原始世界坐标时需先加上此偏移
-        self.alignment_offset: Optional[torch.Tensor] = None
-
         # 初始点云（归一化空间）
         self.initial_points: Optional[torch.Tensor] = None
 
@@ -178,9 +175,6 @@ class BSplineDeformer(object):
         print(f"B-Spline Control Grid Size: {self.grid_W + 3}x{self.grid_H + 3}x{self.grid_D + 3} (WxHxD)")
         print(f"Inner Grid Size: {self.grid_W}x{self.grid_H}x{self.grid_D}")
         print(f"Normalization: center={self.center.cpu().numpy()}, scale={self.scale.item():.6f}")
-
-        # 清除之前的质心对齐偏移（若存在），使 query 使用与 loadPoints 一致的世界系
-        self.alignment_offset = None
 
         # 5. 初始化控制点的偏移量
         # 为了边界处理，控制网格在每个方向上多 3 个点
@@ -352,9 +346,6 @@ class BSplineDeformer(object):
         normalized_source = (aligned_source - self.center) / self.scale
         normalized_target = (target_points - self.center) / self.scale
 
-        # deformPoints 使用仿射对齐，query 时输入为对齐后世界坐标，无需质心偏移
-        self.alignment_offset = None
-
         # 3. 初始化控制点偏移量并设置为可学习
         self.control_offsets = torch.zeros(
             self.grid_D + 3, self.grid_H + 3, self.grid_W + 3, 3,
@@ -457,14 +448,8 @@ class BSplineDeformer(object):
 
         print(f"deformUnmatchedPoints: source {source_points.shape[0]}, target {target_points.shape[0]}")
 
-        # 1. 仅做质心对齐（点数不同无法做仿射 lstsq）
-        source_centroid = source_points.mean(dim=0, keepdim=True)
-        target_centroid = target_points.mean(dim=0, keepdim=True)
-        self.alignment_offset = (target_centroid - source_centroid).squeeze(0)
-        aligned_source = source_points + self.alignment_offset.unsqueeze(0)
-
-        # 2. 转换到归一化空间
-        normalized_source = (aligned_source - self.center) / self.scale
+        # 用 loadPoints 的归一化（source 的 center/scale）将 source 与 target 转到同一归一化空间
+        normalized_source = (source_points - self.center) / self.scale
         normalized_target = (target_points - self.center) / self.scale
 
         # 3. 控制点偏移设为可学习
@@ -495,7 +480,7 @@ class BSplineDeformer(object):
 
         self.control_offsets = self.control_offsets.detach()
 
-        final_points = self._apply_deformation(aligned_source)
+        final_points = self._apply_deformation(source_points)
         print("deformUnmatchedPoints (Chamfer) Optimization Done.")
         return final_points
 
@@ -530,14 +515,11 @@ class BSplineDeformer(object):
         对点云应用已学习的 B 样条形变。
 
         Args:
-            points: 世界坐标系点云 (N, 3)。若由 deformUnmatchedPoints 得到变形，
-                此处应为与 loadPoints 一致的原始世界坐标，内部会自动加上质心对齐偏移。
+            points: 世界坐标系点云 (N, 3)。应与 loadPoints 使用同一套世界坐标（即 source）
 
         Returns:
             形变后的点云 (N, 3)
         """
-        if self.alignment_offset is not None:
-            points = points + self.alignment_offset.unsqueeze(0)
         normalized_points = (points - self.center) / self.scale
         point_offsets = self._evaluate_bspline(normalized_points, self.control_offsets)
         deformed_normalized = normalized_points + point_offsets

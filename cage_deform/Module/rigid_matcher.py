@@ -49,6 +49,8 @@ class RigidMatcher(object):
         test_rotation_num: int = 36,
         coarse_sample_num: int = 8192,
     ) -> np.ndarray:
+        """鲁棒 ICP 配准，返回将 source 对齐到 target 的 4x4 变换矩阵。
+        约定：点云 (N,4) 右乘 T 即得变换结果，无需转置：aligned = points @ T。"""
         source_pts = toNumpy(source_points).reshape(-1, 3)
         target_pts = toNumpy(target_points).reshape(-1, 3)
 
@@ -72,6 +74,11 @@ class RigidMatcher(object):
         source_dists = np.linalg.norm(source_pts - source_center, axis=1)
         source_radius = np.percentile(source_dists, 95)
         source_radius = max(source_radius, 1e-9)  # 避免除零
+        scale = target_radius / source_radius
+        # 4x4: T_normalize: p -> scale*(p - source_center) + target_center
+        T_normalize = np.eye(4)
+        T_normalize[:3, :3] = scale * np.eye(3)
+        T_normalize[:3, 3] = target_center - scale * source_center
         source_pts = (source_pts - source_center) / source_radius * target_radius + target_center
 
         # 粗匹配：最远点采样 + 大量旋转角度
@@ -122,24 +129,34 @@ class RigidMatcher(object):
             print(f"  粗匹配最佳: Fitness={best_fitness:.6f}, RMSE={best_rmse:.6f}")
 
         if best_rotation is None:
-            best_icp_pts = source_pts  # 无有效配准时退回当前 source_pts
-        else:
-            # 精匹配：用全点云，以粗匹配结果为初值做一次 ICP
-            rotated_source_pts = (source_pts - target_center) @ best_rotation.T + target_center
-            source_pcd_full = toPcd(rotated_source_pts)
-            target_pcd_full = toPcd(target_pts)
+            # 无有效配准时仅返回归一化变换（source 球对齐到 target 球），右乘约定
+            return T_normalize.T.astype(np.float64)
 
-            print("精匹配: 全点云 ICP...")
-            reg_fine = o3d.pipelines.registration.registration_icp(
-                source_pcd_full, target_pcd_full, threshold, best_coarse_trans,
-                o3d.pipelines.registration.TransformationEstimationPointToPoint(with_scaling=True),
-                o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=5000),
-            )
-            source_pcd_full.transform(reg_fine.transformation)
-            best_icp_pts = np.asarray(source_pcd_full.points)
-            print(f"  精匹配 Fitness={reg_fine.fitness:.6f}, RMSE={reg_fine.inlier_rmse:.6f}")
+        # 精匹配：用全点云，以粗匹配结果为初值做一次 ICP
+        rotated_source_pts = (source_pts - target_center) @ best_rotation.T + target_center
+        source_pcd_full = toPcd(rotated_source_pts)
+        target_pcd_full = toPcd(target_pts)
 
-        return best_icp_pts
+        print("精匹配: 全点云 ICP...")
+        reg_fine = o3d.pipelines.registration.registration_icp(
+            source_pcd_full, target_pcd_full, threshold, best_coarse_trans,
+            o3d.pipelines.registration.TransformationEstimationPointToPoint(with_scaling=True),
+            o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=5000),
+        )
+
+        # 组合为从原始 source 到最终对齐的 4x4 变换: T_fine @ T_rotation @ T_normalize
+        # 精匹配输入为 rotated_source_pts = (p - c) @ best_rotation.T + c，即列向量下 p_rot = best_rotation @ (p - c) + c，
+        # 故 T_rotation 应为“施加 best_rotation”的 4x4（列向量 p'=T@p），与 Open3D 一致。
+        T_rotation = np.eye(4)
+        T_rotation[:3, :3] = best_rotation
+        T_rotation[:3, 3] = target_center - best_rotation @ target_center
+
+        # 内部为列向量约定 p'=T@p；返回右乘约定，使 points @ T 即得变换结果
+        T_final_col = reg_fine.transformation @ T_rotation @ T_normalize
+        T_final = T_final_col.T
+        print(f"  精匹配 Fitness={reg_fine.fitness:.6f}, RMSE={reg_fine.inlier_rmse:.6f}")
+
+        return T_final.astype(np.float64)
 
     @staticmethod
     def robustICPFile(
@@ -160,17 +177,20 @@ class RigidMatcher(object):
 
         target_pcd = o3d.io.read_point_cloud(target_pcd_file_path)
 
-        source_points = source_mesh.vertices
+        source_points = np.asarray(source_mesh.vertices)
         target_points = np.asarray(target_pcd.points)
 
-        best_icp_pts = RigidMatcher.robustICP(
+        T = RigidMatcher.robustICP(
             source_points,
             target_points,
             test_rotation_num,
             coarse_sample_num,
         )
-
-        source_mesh.vertices = best_icp_pts
+        # 点云 (N,4) 右乘 T
+        ones = np.ones((len(source_points), 1), dtype=source_points.dtype)
+        source_h = np.hstack([source_points, ones])  # (N, 4)
+        aligned = (source_h @ T)[:, :3]
+        source_mesh.vertices = aligned
 
         createFileFolder(save_mesh_file_path)
         source_mesh.export(save_mesh_file_path)
