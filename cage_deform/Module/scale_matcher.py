@@ -82,6 +82,7 @@ class ScaleMatcher(object):
         target_points,
         lr=1e-3,
         steps=1000,
+        patience=10,
     ) -> np.ndarray:
         self.reset()
 
@@ -100,6 +101,9 @@ class ScaleMatcher(object):
         ones = torch.ones(source_pts.shape[0], 1, device=self.device)
         X_h = torch.cat([source_pts, ones], dim=1)  # [N,4]
         X = X_h.unsqueeze(0) # [1,N,4]
+
+        best_loss = float("inf")
+        no_improve_count = 0
 
         pbar = trange(steps, desc="matchScale")
         for i in pbar:
@@ -122,7 +126,18 @@ class ScaleMatcher(object):
             loss.backward()
             optimizer.step()
 
-            pbar.set_postfix(loss=f"{loss.item():.6f}")
+            loss_val = loss.item()
+            pbar.set_postfix(loss=f"{loss_val:.6f}")
+
+            # 连续 patience 步不下降则提前终止
+            if loss_val < best_loss:
+                best_loss = loss_val
+                no_improve_count = 0
+            else:
+                no_improve_count += 1
+                if no_improve_count >= patience:
+                    pbar.set_postfix(loss=f"{loss_val:.6f}", early_stop=True)
+                    break
 
         # 返回 4x4 变换矩阵，可与 Nx4 点云右乘：points_transformed = points @ T
         with torch.no_grad():
