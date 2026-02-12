@@ -48,6 +48,7 @@ class RigidMatcher(object):
         target_points: Union[torch.Tensor, np.ndarray, list],
         test_rotation_num: int = 36,
         coarse_sample_num: int = 8192,
+        threshold_ratio: float = 0.02,
         with_scaling: bool=True,
     ) -> np.ndarray:
         """鲁棒 ICP 配准，返回将 source 对齐到 target 的 4x4 变换矩阵。
@@ -96,7 +97,6 @@ class RigidMatcher(object):
 
         axis_rotations = sample_axis_aligned_rotations()  # X/Y/Z 各 0,90,180,270 度，共 64 种
         fib_rotations = sampleFibonacciRotations(test_rotation_num)  # 每种轴位姿下的细采样旋转
-        threshold = 0.02  # 移动范围阈值
 
         # 所有 (R_axis, R_fib) 组合，用于并行 ICP
         rotation_pairs = [(R_axis, R_fib) for R_axis in axis_rotations for R_fib in fib_rotations]
@@ -108,6 +108,8 @@ class RigidMatcher(object):
         best_rmse = float("inf")
         best_rotation = None
         best_coarse_trans = None
+
+        threshold = max(threshold_ratio * target_radius, 1e-9)
 
         def _task(args: Tuple[np.ndarray, np.ndarray]) -> Tuple[float, float, np.ndarray, np.ndarray]:
             R_axis, R_fib = args
