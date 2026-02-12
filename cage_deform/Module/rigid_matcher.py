@@ -9,8 +9,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from cage_deform.Method.pcd import toPcd
 from cage_deform.Method.data import toNumpy
-from cage_deform.Method.io import loadMeshFile
-from cage_deform.Method.path import createFileFolder
 from cage_deform.Method.sample import sample_axis_aligned_rotations
 from cage_deform.Method.sample import sampleFibonacciRotations
 
@@ -22,6 +20,7 @@ def _run_single_icp(
     target_pcd_coarse: o3d.geometry.PointCloud,
     target_center: np.ndarray,
     threshold: float,
+    with_scaling: bool=True,
 ) -> Tuple[float, float, np.ndarray, np.ndarray]:
     """单次粗匹配 ICP，返回 (fitness, inlier_rmse, R_combined, transformation)。"""
     R_combined = R_fib @ R_axis
@@ -33,7 +32,7 @@ def _run_single_icp(
         target_pcd_coarse,
         threshold,
         trans_init,
-        o3d.pipelines.registration.TransformationEstimationPointToPoint(with_scaling=True),
+        o3d.pipelines.registration.TransformationEstimationPointToPoint(with_scaling=with_scaling),
         o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=2000),
     )
     return (reg.fitness, reg.inlier_rmse, R_combined.copy(), reg.transformation.copy())
@@ -49,6 +48,7 @@ class RigidMatcher(object):
         target_points: Union[torch.Tensor, np.ndarray, list],
         test_rotation_num: int = 36,
         coarse_sample_num: int = 8192,
+        with_scaling: bool=True,
     ) -> np.ndarray:
         """鲁棒 ICP 配准，返回将 source 对齐到 target 的 4x4 变换矩阵。
         约定：点云 (N,4) 右乘 T 即得变换结果，无需转置：aligned = points @ T。"""
@@ -113,7 +113,7 @@ class RigidMatcher(object):
             R_axis, R_fib = args
             return _run_single_icp(
                 R_axis, R_fib,
-                source_pts_coarse, target_pcd_coarse, target_center, threshold,
+                source_pts_coarse, target_pcd_coarse, target_center, threshold, with_scaling,
             )
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -141,7 +141,7 @@ class RigidMatcher(object):
         print("精匹配: 全点云 ICP...")
         reg_fine = o3d.pipelines.registration.registration_icp(
             source_pcd_full, target_pcd_full, threshold, best_coarse_trans,
-            o3d.pipelines.registration.TransformationEstimationPointToPoint(with_scaling=True),
+            o3d.pipelines.registration.TransformationEstimationPointToPoint(with_scaling=with_scaling),
             o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=5000),
         )
 
@@ -161,38 +161,22 @@ class RigidMatcher(object):
 
     @staticmethod
     def robustICPFile(
-        source_mesh_file_path: str,
+        source_pcd_file_path: str,
         target_pcd_file_path: str,
-        save_mesh_file_path: str,
         test_rotation_num: int = 36,
         coarse_sample_num: int = 8192,
-    ) -> bool:
-        if os.path.exists(save_mesh_file_path):
-            return True
-
-        source_mesh = loadMeshFile(source_mesh_file_path)
-        if source_mesh is None:
-            print('[ERROR][RigidMatcher::robustICPFile]')
-            print('\t loadMeshFile failed!')
-            return False
-
+        with_scaling: bool=True,
+    ) -> np.ndarray:
+        source_pcd = o3d.io.read_point_cloud(source_pcd_file_path)
         target_pcd = o3d.io.read_point_cloud(target_pcd_file_path)
 
-        source_points = np.asarray(source_mesh.vertices)
+        source_points = np.asarray(source_pcd.points)
         target_points = np.asarray(target_pcd.points)
 
-        T = RigidMatcher.robustICP(
+        return RigidMatcher.robustICP(
             source_points,
             target_points,
             test_rotation_num,
             coarse_sample_num,
+            with_scaling,
         )
-        # 点云 (N,4) 右乘 T
-        ones = np.ones((len(source_points), 1), dtype=source_points.dtype)
-        source_h = np.hstack([source_points, ones])  # (N, 4)
-        aligned = (source_h @ T)[:, :3]
-        source_mesh.vertices = aligned
-
-        createFileFolder(save_mesh_file_path)
-        source_mesh.export(save_mesh_file_path)
-        return True
