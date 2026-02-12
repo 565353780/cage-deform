@@ -4,7 +4,7 @@ import numpy as np
 import open3d as o3d
 
 from tqdm import trange
-from typing import Tuple
+from typing import Tuple, Union
 
 if torch.cuda.is_available():
     from cage_deform.Lib.chamfer3D.dist_chamfer_3D import chamfer_3DDist
@@ -78,11 +78,11 @@ class ScaleMatcher(object):
 
     def matchScale(
         self,
-        source_points,
-        target_points,
-        lr=1e-3,
-        steps=1000,
-        patience=10,
+        source_points: Union[torch.Tensor, np.ndarray, list],
+        target_points: Union[torch.Tensor, np.ndarray, list],
+        lr: float=1e-3,
+        steps: int=1000,
+        patience: int=10,
     ) -> np.ndarray:
         self.reset()
 
@@ -150,8 +150,9 @@ class ScaleMatcher(object):
         source_mesh_file_path: str,
         target_pcd_file_path: str,
         save_mesh_file_path: str,
-        lr=1e-3,
-        steps=1000,
+        lr: float=1e-3,
+        steps: int=1000,
+        patience: int=10,
     ) -> bool:
         if os.path.exists(save_mesh_file_path):
             return True
@@ -172,6 +173,7 @@ class ScaleMatcher(object):
             target_points,
             lr,
             steps,
+            patience,
         )
         # 点云 (N,4) 右乘 T
         ones = np.ones((len(source_points), 1), dtype=source_points.dtype)
